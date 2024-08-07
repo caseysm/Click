@@ -10,8 +10,6 @@ To install this package directly from GitHub, use the following pip command:
 pip install git+https://github.com/caseysm/click.git
 ```
 
-Replace `yourusername` with your actual GitHub username.
-
 ## Usage
 
 After installation, you can use the package in your Python scripts:
