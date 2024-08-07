@@ -151,16 +151,23 @@ class Click:
         return df[df['Atom1'] == 'CA'].astype({'ResNum1': int, 'ResNum2': int, 'ResName1': str, 'ResName2': str})
 
     def _build_aligned_sequences(self, df: pd.DataFrame, pdb1_name: str, pdb2_name: str) -> Tuple[SeqRecord, SeqRecord]:
-        """Build aligned sequences from the parsed clique file, including gaps."""
-        max_res_num1 = df['ResNum1'].max()
-        max_res_num2 = df['ResNum2'].max()
+        """Build aligned sequences from the parsed clique file using row indices."""
+        seq1 = []
+        seq2 = []
+        last_index1 = -1
+        last_index2 = -1
 
-        seq1 = ['-'] * max_res_num1
-        seq2 = ['-'] * max_res_num2
+        for index, row in df.iterrows():
+            # Add gaps if there are skipped positions
+            seq1.extend(['-'] * (index - last_index1 - 1))
+            seq2.extend(['-'] * (index - last_index2 - 1))
 
-        for _, row in df.iterrows():
-            seq1[row['ResNum1']-1] = row['ResName1']
-            seq2[row['ResNum2']-1] = row['ResName2']
+            # Add the amino acids
+            seq1.append(row['ResName1'])
+            seq2.append(row['ResName2'])
+
+            last_index1 = index
+            last_index2 = index
 
         seq1 = ''.join(seq1)
         seq2 = ''.join(seq2)
@@ -175,7 +182,7 @@ class Click:
                 outfile.write(f">{seq_record.id}\n")
                 sequence = str(seq_record.seq)
                 for i in range(0, len(sequence), 60):
-                    chunk = sequence[i:i+60]
+                    chunk = sequence[i:i + 60]
                     outfile.write(f"{chunk}\n")
 
 def click_analysis(input_dir: Path, output_dir: Path, click_path: Path = None, cpu_percentage: float = 25, pairwise_dir: Path = None) -> None:
