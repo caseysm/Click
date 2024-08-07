@@ -4,16 +4,16 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setup(
-    name="click",
+    name="Click",
     version="0.1.0",
     author="Your Name",
     author_email="your.email@example.com",
     description="A package for CLICK analysis on PDB files",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/caseysm/click",
+    url="https://github.com/yourusername/Click",
     package_dir={"": "src"},
-    packages=find_packages(where="src"),
+    packages=["Click"],  # Explicitly specify the package
     include_package_data=True,
     classifiers=[
         "Development Status :: 3 - Alpha",
@@ -33,10 +33,10 @@ setup(
     ],
     entry_points={
         "console_scripts": [
-            "click-analysis=click.click:main",
+            "click-analysis=Click.click:main",
         ],
     },
     package_data={
-        "click": ["bin/click"],
+        "Click": ["bin/click"],
     },
 )

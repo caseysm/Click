@@ -1,4 +1,4 @@
-# CLICK Analysis Package
+# Click Analysis Package
 
 This package provides tools for performing CLICK analysis on PDB files and generating pairwise alignments.
 
@@ -7,15 +7,17 @@ This package provides tools for performing CLICK analysis on PDB files and gener
 To install this package directly from GitHub, use the following pip command:
 
 ```
-pip install git+https://github.com/caseysm/click.git
+pip install git+https://github.com/yourusername/Click.git
 ```
+
+Replace `yourusername` with your actual GitHub username.
 
 ## Usage
 
 After installation, you can use the package in your Python scripts:
 
 ```python
-from click import Click
+from Click import Click
 
 analyzer = Click(input_dir="path/to/pdb/files", output_dir="path/to/output")
 analyzer.run_analysis()

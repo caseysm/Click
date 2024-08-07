@@ -46,7 +46,7 @@ class Click:
         self.input_dir = input_dir
         self.output_dir = output_dir
         if click_path is None:
-            click_path = pkg_resources.resource_filename('click', 'bin/click')
+            click_path = pkg_resources.resource_filename('Click', 'bin/click')
         self.click_path = Path(click_path)
         self.cpu_cores = max(1, int(cpu_count() * (cpu_percentage / 100)))
         self.expected_fastas = 0
