@@ -1,1 +1,4 @@
 include src/Click/bin/click
+recursive-include src/Click/bin *
+include README.md
+include LICENSE
