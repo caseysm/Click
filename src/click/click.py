@@ -1,10 +1,10 @@
 """
 click.py
 
-This module provides the ClickAnalyzer class for performing CLICK analysis on PDB files
+This module provides the Click class for performing CLICK analysis on PDB files
 and generating pairwise alignments.
 
-The ClickAnalyzer uses the CLICK tool to align protein structures and creates pairwise FASTA files.
+The Click class uses the CLICK tool to align protein structures and creates pairwise FASTA files.
 """
 
 import os
@@ -28,14 +28,14 @@ class ClickError(Exception):
     """Custom exception for CLICK related errors."""
     pass
 
-class ClickAnalyzer:
+class Click:
     """
     Performs CLICK analysis on PDB files and generates pairwise alignments.
     """
 
     def __init__(self, input_dir: Path, output_dir: Path, click_path: Path = None, cpu_percentage: float = 25):
         """
-        Initialize the ClickAnalyzer.
+        Initialize the Click instance.
 
         Args:
             input_dir (Path): Directory containing input PDB files.
@@ -174,7 +174,7 @@ def click_analysis(input_dir: Path, output_dir: Path, click_path: Path = None, c
         cpu_percentage (float): Percentage of CPU cores to use (default: 25).
         pairwise_dir (Path): Directory to store pairwise FASTA files (default: None).
     """
-    analyzer = ClickAnalyzer(input_dir, output_dir, click_path, cpu_percentage)
+    analyzer = Click(input_dir, output_dir, click_path, cpu_percentage)
     analyzer.run_analysis(pairwise_dir)
 
 def main():

@@ -1,3 +1,3 @@
-from .click import ClickAnalyzer, click_analysis
+from .click import Click, click_analysis
 
-__all__ = ['ClickAnalyzer', 'click_analysis']
+__all__ = ['Click', 'click_analysis']

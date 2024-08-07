@@ -7,7 +7,7 @@ This package provides tools for performing CLICK analysis on PDB files and gener
 To install this package directly from GitHub, use the following pip command:
 
 ```
-pip install git+https://github.com/yourusername/click.git
+pip install git+https://github.com/caseysm/click.git
 ```
 
 Replace `yourusername` with your actual GitHub username.
@@ -17,9 +17,9 @@ Replace `yourusername` with your actual GitHub username.
 After installation, you can use the package in your Python scripts:
 
 ```python
-from click import ClickAnalyzer
+from click import Click
 
-analyzer = ClickAnalyzer(input_dir="path/to/pdb/files", output_dir="path/to/output")
+analyzer = Click(input_dir="path/to/pdb/files", output_dir="path/to/output")
 analyzer.run_analysis()
 ```
 
