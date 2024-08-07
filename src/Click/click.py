@@ -151,17 +151,32 @@ class Click:
         return df[df['Atom1'] == 'CA'].astype({'ResNum1': int, 'ResNum2': int, 'ResName1': str, 'ResName2': str})
 
     def _build_aligned_sequences(self, df: pd.DataFrame, pdb1_name: str, pdb2_name: str) -> Tuple[SeqRecord, SeqRecord]:
-        """Build aligned sequences from the parsed clique file."""
-        seq1 = Seq(''.join(df['ResName1']))
-        seq2 = Seq(''.join(df['ResName2']))
-        return (SeqRecord(seq1, id=pdb1_name, description=""),
-                SeqRecord(seq2, id=pdb2_name, description=""))
+        """Build aligned sequences from the parsed clique file, including gaps."""
+        max_res_num1 = df['ResNum1'].max()
+        max_res_num2 = df['ResNum2'].max()
+
+        seq1 = ['-'] * max_res_num1
+        seq2 = ['-'] * max_res_num2
+
+        for _, row in df.iterrows():
+            seq1[row['ResNum1']-1] = row['ResName1']
+            seq2[row['ResNum2']-1] = row['ResName2']
+
+        seq1 = ''.join(seq1)
+        seq2 = ''.join(seq2)
+
+        return (SeqRecord(Seq(seq1), id=pdb1_name, description=""),
+                SeqRecord(Seq(seq2), id=pdb2_name, description=""))
 
     def _convert_to_fasta(self, seq_records: List[SeqRecord], fasta_output_file: Path) -> None:
         """Convert sequence records to FASTA format and save to file."""
         with open(fasta_output_file, 'w') as outfile:
             for seq_record in seq_records:
-                outfile.write(f">{seq_record.id}\n{''.join(seq_record.seq)}\n")
+                outfile.write(f">{seq_record.id}\n")
+                sequence = str(seq_record.seq)
+                for i in range(0, len(sequence), 60):
+                    chunk = sequence[i:i+60]
+                    outfile.write(f"{chunk}\n")
 
 def click_analysis(input_dir: Path, output_dir: Path, click_path: Path = None, cpu_percentage: float = 25, pairwise_dir: Path = None) -> None:
     """
@@ -191,5 +206,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
