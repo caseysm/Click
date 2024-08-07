@@ -20,6 +20,7 @@ from multiprocessing import Pool, cpu_count
 import itertools
 from typing import List, Tuple
 from tqdm import tqdm
+import pkg_resources
 
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -44,7 +45,9 @@ class ClickAnalyzer:
         """
         self.input_dir = input_dir
         self.output_dir = output_dir
-        self.click_path = click_path or Path(__file__).resolve().parent / "bin" / "click"
+        if click_path is None:
+            click_path = pkg_resources.resource_filename('click', 'bin/click')
+        self.click_path = Path(click_path)
         self.cpu_cores = max(1, int(cpu_count() * (cpu_percentage / 100)))
         self.expected_fastas = 0
         self.actual_fastas = 0
@@ -174,7 +177,7 @@ def click_analysis(input_dir: Path, output_dir: Path, click_path: Path = None, c
     analyzer = ClickAnalyzer(input_dir, output_dir, click_path, cpu_percentage)
     analyzer.run_analysis(pairwise_dir)
 
-if __name__ == "__main__":
+def main():
     import argparse
     parser = argparse.ArgumentParser(description="Perform CLICK analysis and generate pairwise alignments")
     parser.add_argument("input_dir", type=Path, help="Directory containing input PDB files")
@@ -186,5 +189,7 @@ if __name__ == "__main__":
 
     click_analysis(args.input_dir, args.output_dir, args.click_path, args.cpu_percentage, args.pairwise_dir)
 
+if __name__ == "__main__":
+    main()
 
 
