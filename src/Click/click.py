@@ -1,28 +1,20 @@
-"""
-click.py
-
-This module provides the Click class for performing CLICK analysis on PDB files
-and generating pairwise alignments.
-
-The Click class uses the CLICK tool to align protein structures and creates pairwise FASTA files.
-"""
-
 import os
 import shutil
 import subprocess
 import tempfile
 import logging
 import pandas as pd
+import numpy as np
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from pathlib import Path
 from multiprocessing import Pool, cpu_count
 import itertools
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from tqdm import tqdm
 import pkg_resources
 
-logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class ClickError(Exception):
     """Custom exception for CLICK related errors."""
@@ -30,98 +22,144 @@ class ClickError(Exception):
 
 class Click:
     """
-    Performs CLICK analysis on PDB files and generates pairwise alignments.
+    Performs CLICK analysis on PDB files and generates pairwise alignments and a similarity matrix.
     """
 
-    def __init__(self, input_dir: Path, output_dir: Path, click_path: Path = None, cpu_percentage: float = 25):
+    def __init__(self, input_dir: Path, output_dir: Path, click_path: Path = None):
         """
         Initialize the Click instance.
 
         Args:
             input_dir (Path): Directory containing input PDB files.
-            output_dir (Path): Directory for output FASTA files.
+            output_dir (Path): Directory for output files.
             click_path (Path): Path to the CLICK executable. If None, defaults to the 'bin' directory.
-            cpu_percentage (float): Percentage of CPU cores to use (default: 25).
         """
         self.input_dir = input_dir
         self.output_dir = output_dir
         if click_path is None:
             click_path = pkg_resources.resource_filename('Click', 'bin/click')
         self.click_path = Path(click_path)
-        self.cpu_cores = max(1, int(cpu_count() * (cpu_percentage / 100)))
         self.expected_fastas = 0
         self.actual_fastas = 0
+        self.structure_overlaps = {}
+        self.pdb_names = []
 
-    def run_analysis(self, pairwise_dir: Path = None) -> None:
+    def pdb_vs_pdb(self, pdb1: Path, pdb2: Path, output_overlap: bool = True, output_clique: bool = False, output_aligned_pdb: bool = False) -> float:
         """
-        Run the CLICK analysis pipeline to generate pairwise alignments.
+        Compare two PDB files using CLICK.
 
         Args:
-            pairwise_dir (Path): Directory to store pairwise FASTA files (default: None).
-        """
-        pairwise_dir = pairwise_dir or self.output_dir / "pairwise_fastas"
-        pairwise_dir.mkdir(parents=True, exist_ok=True)
+            pdb1 (Path): Path to the first PDB file.
+            pdb2 (Path): Path to the second PDB file.
+            output_overlap (bool): Whether to output the overlap score (default: True).
+            output_clique (bool): Whether to output the clique file (default: False).
+            output_aligned_pdb (bool): Whether to output the aligned PDB files (default: False).
 
+        Returns:
+            float: The structure overlap score.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdb1_temp = Path(temp_dir) / pdb1.name
+            pdb2_temp = Path(temp_dir) / pdb2.name
+            shutil.copy(pdb1, pdb1_temp)
+            shutil.copy(pdb2, pdb2_temp)
+
+            pdb1_name = pdb1.stem
+            pdb2_name = pdb2.stem
+            alignment_output_prefix = f"{temp_dir}/{pdb1_name}-{pdb2_name}"
+
+            command = [str(self.click_path), str(pdb1_temp), str(pdb2_temp)]
+            try:
+                subprocess.run(command, check=True, capture_output=True, text=True, cwd=temp_dir)
+            except subprocess.CalledProcessError as e:
+                logging.error(f"CLICK failed for {pdb1} and {pdb2}: {e.stderr}")
+                return 0.0
+            except FileNotFoundError:
+                raise ClickError(f"CLICK executable not found at {self.click_path}")
+
+            clique_file = Path(f"{alignment_output_prefix}.pdb.1.clique")
+            if not clique_file.exists():
+                raise ClickError(f"Clique file not found at expected location: {clique_file}")
+
+            overlap = self._parse_overlap_from_clique(clique_file)
+
+            if output_overlap:
+                print(f"Structure overlap between {pdb1_name} and {pdb2_name}: {overlap:.2f}")
+
+            if output_clique:
+                shutil.copy(clique_file, self.output_dir / clique_file.name)
+
+            if output_aligned_pdb:
+                aligned_pdb_files = list(Path(temp_dir).glob(f"{pdb1_name}-{pdb2_name}.pdb.*"))
+                for aligned_pdb in aligned_pdb_files:
+                    shutil.copy(aligned_pdb, self.output_dir / aligned_pdb.name)
+
+            return overlap
+
+    def all_vs_all(self, cpu_percentage: float = 25, output_similarity_matrix: bool = True, output_clique: bool = False, output_aligned_pdb: bool = False) -> Optional[np.ndarray]:
+        """
+        Perform all-vs-all comparison of PDB files in the input directory.
+
+        Args:
+            cpu_percentage (float): Percentage of CPU cores to use (default: 25).
+            output_similarity_matrix (bool): Whether to output the similarity matrix (default: True).
+            output_clique (bool): Whether to output the clique files (default: False).
+            output_aligned_pdb (bool): Whether to output the aligned PDB files (default: False).
+
+        Returns:
+            Optional[np.ndarray]: The similarity matrix if output_similarity_matrix is True, otherwise None.
+        """
         pdb_files = list(self.input_dir.glob('*.pdb'))
         if not pdb_files:
             logging.warning(f"No PDB files found in {self.input_dir}")
-            return
+            return None
 
+        self.pdb_names = [pdb.stem for pdb in pdb_files]
         self.expected_fastas = len(pdb_files) ** 2
         pairs = list(itertools.product(pdb_files, repeat=2))
 
-        with Pool(processes=self.cpu_cores) as pool:
+        cpu_cores = max(1, int(cpu_count() * (cpu_percentage / 100)))
+        with Pool(processes=cpu_cores) as pool:
             list(tqdm(pool.imap_unordered(self._process_pair_wrapper,
-                     [(pdb1, pdb2, pairwise_dir) for pdb1, pdb2 in pairs]),
+                     [(pdb1, pdb2, output_clique, output_aligned_pdb) for pdb1, pdb2 in pairs]),
                  total=len(pairs),
                  desc="Aligning pairs"))
 
         if self.expected_fastas != self.actual_fastas:
             logging.warning(f"Mismatch in FASTA file count. Expected: {self.expected_fastas}, Actual: {self.actual_fastas}")
 
+        sim_matrix = self._calculate_similarity_matrix()
+
+        if output_similarity_matrix:
+            self._save_similarity_matrix(sim_matrix)
+            return sim_matrix
+        else:
+            return None
+
     def _process_pair_wrapper(self, args):
-        """
-        Wrapper function for _process_pair to be used with Pool.imap_unordered.
-        """
+        """Wrapper function for _process_pair to be used with Pool.imap_unordered."""
         return self._process_pair(*args)
 
-    def _process_pair(self, pdb1: Path, pdb2: Path, pairwise_dir: Path) -> None:
-        """
-        Process a pair of PDB files with CLICK.
-
-        Args:
-            pdb1 (Path): Path to the first PDB file.
-            pdb2 (Path): Path to the second PDB file.
-            pairwise_dir (Path): Directory to store pairwise FASTA files.
-        """
+    def _process_pair(self, pdb1: Path, pdb2: Path, output_clique: bool, output_aligned_pdb: bool) -> None:
+        """Process a pair of PDB files with CLICK."""
         try:
-            self._run_click(pdb1, pdb2, pairwise_dir)
+            self._run_click(pdb1, pdb2, output_clique, output_aligned_pdb)
         except Exception as e:
             logging.error(f"Error processing {pdb1} and {pdb2}: {e}")
 
-    def _run_click(self, pdb1: Path, pdb2: Path, pairwise_dir: Path) -> None:
-        """
-        Run CLICK on a pair of PDB files.
-
-        Args:
-            pdb1 (Path): Path to the first PDB file.
-            pdb2 (Path): Path to the second PDB file.
-            pairwise_dir (Path): Directory to store pairwise FASTA files.
-
-        Raises:
-            ClickError: If CLICK executable is not found or fails to run.
-        """
+    def _run_click(self, pdb1: Path, pdb2: Path, output_clique: bool, output_aligned_pdb: bool) -> None:
+        """Run CLICK on a pair of PDB files."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            pdb1_temp = os.path.join(temp_dir, os.path.basename(pdb1))
-            pdb2_temp = os.path.join(temp_dir, os.path.basename(pdb2))
+            pdb1_temp = Path(temp_dir) / pdb1.name
+            pdb2_temp = Path(temp_dir) / pdb2.name
             shutil.copy(pdb1, pdb1_temp)
             shutil.copy(pdb2, pdb2_temp)
 
-            pdb1_name = os.path.splitext(os.path.basename(pdb1))[0]
-            pdb2_name = os.path.splitext(os.path.basename(pdb2))[0]
+            pdb1_name = pdb1.stem
+            pdb2_name = pdb2.stem
             alignment_output_prefix = f"{temp_dir}/{pdb1_name}-{pdb2_name}"
 
-            command = [str(self.click_path), pdb1_temp, pdb2_temp]
+            command = [str(self.click_path), str(pdb1_temp), str(pdb2_temp)]
             try:
                 subprocess.run(command, check=True, capture_output=True, text=True, cwd=temp_dir)
             except subprocess.CalledProcessError as e:
@@ -130,87 +168,143 @@ class Click:
             except FileNotFoundError:
                 raise ClickError(f"CLICK executable not found at {self.click_path}")
 
-            expected_clique_file = f"{alignment_output_prefix}.pdb.1.clique"
-            if not os.path.exists(expected_clique_file):
-                raise ClickError(f"Clique file not found at expected location: {expected_clique_file}")
+            clique_file = Path(f"{alignment_output_prefix}.pdb.1.clique")
+            if not clique_file.exists():
+                raise ClickError(f"Clique file not found at expected location: {clique_file}")
 
-            df = self._parse_clique_file(expected_clique_file)
-            seq_record1, seq_record2 = self._build_aligned_sequences(df, pdb1_name, pdb2_name)
-            output_file = pairwise_dir / f"{pdb1_name}_{pdb2_name}.fasta"
-            self._convert_to_fasta([seq_record1, seq_record2], output_file)
+            self._parse_overlap_from_clique(clique_file, pdb1_name, pdb2_name)
+
+            if output_clique:
+                shutil.copy(clique_file, self.output_dir / clique_file.name)
+
+            if output_aligned_pdb:
+                aligned_pdb_files = list(Path(temp_dir).glob(f"{pdb1_name}-{pdb2_name}.pdb.*"))
+                for aligned_pdb in aligned_pdb_files:
+                    shutil.copy(aligned_pdb, self.output_dir / aligned_pdb.name)
+
             self.actual_fastas += 1
 
-    def _parse_clique_file(self, clique_file: str) -> pd.DataFrame:
-        """Parse the CLICK clique file."""
+    def _parse_overlap_from_clique(self, clique_file: Path, pdb1_name: Optional[str] = None, pdb2_name: Optional[str] = None) -> float:
+        """Parse the structure overlap from the clique file."""
         with open(clique_file, 'r') as file:
-            header_line = next(i for i, line in enumerate(file) if line.strip().startswith('Chain'))
+            for line in file:
+                if line.startswith("Structure Overlap"):
+                    overlap = float(line.split('=')[1].strip()) / 100.0
+                    if pdb1_name and pdb2_name:
+                        self.structure_overlaps[(pdb1_name, pdb2_name)] = overlap
+                        self.structure_overlaps[(pdb2_name, pdb1_name)] = overlap
+                    return overlap
+        raise ClickError(f"Structure Overlap not found in clique file: {clique_file}")
 
-        df = pd.read_csv(clique_file, skiprows=header_line, sep=r'\s+',
-                         names=['Chain1', 'ResNum1', 'ResName1', 'Atom1', 'Chain2', 'ResNum2', 'ResName2', 'Atom2'])
+    def _calculate_similarity_matrix(self) -> np.ndarray:
+        """Calculate similarity matrix from structure overlap scores."""
+        n = len(self.pdb_names)
+        sim_matrix = np.zeros((n, n))
 
-        return df[df['Atom1'] == 'CA'].astype({'ResNum1': int, 'ResNum2': int, 'ResName1': str, 'ResName2': str})
+        for i, pdb1 in enumerate(self.pdb_names):
+            for j, pdb2 in enumerate(self.pdb_names):
+                if i == j:
+                    sim_matrix[i, j] = 1.0  # Self-similarity
+                else:
+                    overlap = self.structure_overlaps.get((pdb1, pdb2), 0)
+                    sim_matrix[i, j] = overlap
 
-    def _build_aligned_sequences(self, df: pd.DataFrame, pdb1_name: str, pdb2_name: str) -> Tuple[SeqRecord, SeqRecord]:
-        """Build aligned sequences from the parsed clique file using row indices."""
-        seq1 = []
-        seq2 = []
-        last_index1 = -1
-        last_index2 = -1
+        return sim_matrix
 
-        for index, row in df.iterrows():
-            # Add gaps if there are skipped positions
-            seq1.extend(['-'] * (index - last_index1 - 1))
-            seq2.extend(['-'] * (index - last_index2 - 1))
+    def _save_similarity_matrix(self, sim_matrix: np.ndarray) -> None:
+        """Save the similarity matrix to a CSV file."""
+        df = pd.DataFrame(sim_matrix, index=self.pdb_names, columns=self.pdb_names)
+        output_file = self.output_dir / "similarity_matrix.csv"
+        df.to_csv(output_file)
+        logging.info(f"Similarity matrix saved to {output_file}")
 
-            # Add the amino acids
-            seq1.append(row['ResName1'])
-            seq2.append(row['ResName2'])
-
-            last_index1 = index
-            last_index2 = index
-
-        seq1 = ''.join(seq1)
-        seq2 = ''.join(seq2)
-
-        return (SeqRecord(Seq(seq1), id=pdb1_name, description=""),
-                SeqRecord(Seq(seq2), id=pdb2_name, description=""))
-
-    def _convert_to_fasta(self, seq_records: List[SeqRecord], fasta_output_file: Path) -> None:
-        """Convert sequence records to FASTA format and save to file."""
-        with open(fasta_output_file, 'w') as outfile:
-            for seq_record in seq_records:
-                outfile.write(f">{seq_record.id}\n")
-                sequence = str(seq_record.seq)
-                for i in range(0, len(sequence), 60):
-                    chunk = sequence[i:i + 60]
-                    outfile.write(f"{chunk}\n")
-
-def click_analysis(input_dir: Path, output_dir: Path, click_path: Path = None, cpu_percentage: float = 25, pairwise_dir: Path = None) -> None:
+def click_analysis(input_dir: Path, output_dir: Path, click_path: Path = None, cpu_percentage: float = 25,
+                   mode: str = "all_vs_all", pdb1: Path = None, pdb2: Path = None,
+                   output_similarity_matrix: bool = True, output_overlap: bool = True,
+                   output_clique: bool = False, output_aligned_pdb: bool = False) -> None:
     """
-    Main function to run the CLICK analysis for generating pairwise alignments.
+    Main function to run the CLICK analysis for generating pairwise alignments and similarity matrix.
 
     Args:
         input_dir (Path): Directory containing input PDB files.
-        output_dir (Path): Directory for output FASTA files.
+        output_dir (Path): Directory for output files.
         click_path (Path): Path to the CLICK executable (default: None).
-        cpu_percentage (float): Percentage of CPU cores to use (default: 25).
-        pairwise_dir (Path): Directory to store pairwise FASTA files (default: None).
+        cpu_percentage (float): Percentage of CPU cores to use for all_vs_all mode (default: 25).
+        mode (str): Analysis mode, either "all_vs_all" or "pdb_vs_pdb" (default: "all_vs_all").
+        pdb1 (Path): Path to the first PDB file for pdb_vs_pdb mode (default: None).
+        pdb2 (Path): Path to the second PDB file for pdb_vs_pdb mode (default: None).
+        output_similarity_matrix (bool): Whether to output the similarity matrix in all_vs_all mode (default: True).
+        output_overlap (bool): Whether to output the overlap score in pdb_vs_pdb mode (default: True).
+        output_clique (bool): Whether to output the clique file(s) (default: False).
+        output_aligned_pdb (bool): Whether to output the aligned PDB files (default: False).
     """
-    analyzer = Click(input_dir, output_dir, click_path, cpu_percentage)
-    analyzer.run_analysis(pairwise_dir)
+    analyzer = Click(input_dir, output_dir, click_path)
+
+    if mode == "all_vs_all":
+        analyzer.all_vs_all(cpu_percentage, output_similarity_matrix, output_clique, output_aligned_pdb)
+    elif mode == "pdb_vs_pdb":
+        if pdb1 is None or pdb2 is None:
+            raise ValueError("Both pdb1 and pdb2 must be provided for pdb_vs_pdb mode")
+        analyzer.pdb_vs_pdb(pdb1, pdb2, output_overlap, output_clique, output_aligned_pdb)
+    else:
+        raise ValueError("Invalid mode. Choose either 'all_vs_all' or 'pdb_vs_pdb'")
+
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Perform CLICK analysis and generate pairwise alignments")
-    parser.add_argument("input_dir", type=Path, help="Directory containing input PDB files")
-    parser.add_argument("output_dir", type=Path, help="Output directory for alignment results")
+    parser = argparse.ArgumentParser(description="Perform CLICK analysis on PDB files")
+
+    # Common arguments
     parser.add_argument("--click_path", type=Path, help="Path to CLICK executable")
-    parser.add_argument("--cpu_percentage", type=float, default=25, help="Percentage of CPU cores to use (default: 25)")
-    parser.add_argument("--pairwise_dir", type=Path, help="Directory for pairwise alignments (if different from output_dir)")
+    parser.add_argument("--output_clique", action="store_true", help="Output clique file(s)")
+    parser.add_argument("--output_aligned_pdb", action="store_true", help="Output aligned PDB files")
+    parser.add_argument("--mode", choices=["all_vs_all", "pdb_vs_pdb"], required=True, help="Analysis mode")
+
+    # All-vs-all mode arguments
+    parser.add_argument("--input_dir", type=Path, help="Directory containing input PDB files (for all_vs_all mode)")
+    parser.add_argument("--output_dir", type=Path, help="Output directory for results (for all_vs_all mode)")
+    parser.add_argument("--cpu_percentage", type=float, default=25,
+                        help="Percentage of CPU cores to use for all_vs_all mode (default: 25)")
+    parser.add_argument("--no_similarity_matrix", action="store_true",
+                        help="Don't output similarity matrix in all_vs_all mode")
+
+    # PDB-vs-PDB mode arguments
+    parser.add_argument("--pdb1", type=Path, help="Path to first PDB file (for pdb_vs_pdb mode)")
+    parser.add_argument("--pdb2", type=Path, help="Path to second PDB file (for pdb_vs_pdb mode)")
+    parser.add_argument("--output_fasta", type=Path, help="Output FASTA file path (for pdb_vs_pdb mode)")
+    parser.add_argument("--no_overlap", action="store_true", help="Don't output overlap score in pdb_vs_pdb mode")
+
     args = parser.parse_args()
 
-    click_analysis(args.input_dir, args.output_dir, args.click_path, args.cpu_percentage, args.pairwise_dir)
+    if args.mode == "all_vs_all":
+        if not args.input_dir or not args.output_dir:
+            parser.error("--input_dir and --output_dir are required for all_vs_all mode")
+        click_analysis(
+            input_dir=args.input_dir,
+            output_dir=args.output_dir,
+            click_path=args.click_path,
+            cpu_percentage=args.cpu_percentage,
+            mode="all_vs_all",
+            output_similarity_matrix=not args.no_similarity_matrix,
+            output_clique=args.output_clique,
+            output_aligned_pdb=args.output_aligned_pdb
+        )
+    elif args.mode == "pdb_vs_pdb":
+        if not args.pdb1 or not args.pdb2 or not args.output_fasta:
+            parser.error("--pdb1, --pdb2, and --output_fasta are required for pdb_vs_pdb mode")
+        click_analysis(
+            input_dir=Path(args.pdb1).parent,  # Use parent directory of pdb1 as input_dir
+            output_dir=Path(args.output_fasta).parent,  # Use parent directory of output_fasta as output_dir
+            click_path=args.click_path,
+            mode="pdb_vs_pdb",
+            pdb1=args.pdb1,
+            pdb2=args.pdb2,
+            output_fasta=args.output_fasta,
+            output_overlap=not args.no_overlap,
+            output_clique=args.output_clique,
+            output_aligned_pdb=args.output_aligned_pdb
+        )
+
 
 if __name__ == "__main__":
     main()
-

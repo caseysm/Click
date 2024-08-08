@@ -46,7 +46,7 @@ setup(
     ],
     entry_points={
         "console_scripts": [
-            "click-analysis=Click.click:main",
+            "click=Click.click:main",
         ],
     },
     cmdclass={
